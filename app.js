@@ -137,8 +137,8 @@ const DOUBLE_TAP_DELAY = 300; // ms - max time between taps
 const TAP_DISTANCE_THRESHOLD = 30; // px - max distance between taps
 
 function handleTap(e) {
-  // Don't process taps during drag
-  if (isDragging) return;
+  // Don't process taps during drag (only if actual movement occurred)
+  if (isDragging || hasMoved) return;
   
   const now = Date.now();
   const touch = e.touches ? e.changedTouches[0] : e;
@@ -205,6 +205,12 @@ function rewindLastAction() {
   if (actionHistory.length === 0) {
     console.log("No actions to rewind");
     showToast("Nothing to rewind!");
+    return;
+  }
+  
+  // Block rewind while animation is in progress
+  if (isAnimating) {
+    showToast("Please wait...");
     return;
   }
   
@@ -313,8 +319,9 @@ function renderDeck() {
 
     const img = document.createElement("img");
     img.className = "card__media";
-    img.src = p.images ? p.images[p.currentPhotoIndex] : p.img;
-    img.alt = `${p.name} — profile photo ${p.currentPhotoIndex + 1} of ${p.images ? p.images.length : 1}`;
+    const photoIndex = p.currentPhotoIndex || 0;
+    img.src = p.images ? p.images[photoIndex] : p.img;
+    img.alt = `${p.name} — profile photo ${photoIndex + 1} of ${p.images ? p.images.length : 1}`;
 
     const body = document.createElement("div");
     body.className = "card__body";
@@ -406,10 +413,12 @@ if (boostBtn) {
 // Swipe left - Reject/Nope
 function rejectTopCard() {
   const topCard = deckEl.querySelector(".card:first-child");
-  if (!topCard || profiles.length === 0) return;
+  if (!topCard || profiles.length === 0 || isAnimating) return;
 
-  // Save to history before removing
+  // Save to history and shift state immediately to prevent race conditions
   saveToHistory(profiles[0], "nope");
+  profiles.shift();
+  isAnimating = true;
 
   // Remove swiping class to enable transitions
   topCard.classList.remove("swiping");
@@ -421,7 +430,8 @@ function rejectTopCard() {
   
   topCard.addEventListener("transitionend", () => {
     topCard.remove();
-    profiles.shift();
+    isAnimating = false;
+    attachDoubleTapListeners(); // Reattach listeners to new top card
     console.log("Card rejected.");
     showToast("Nope! 👎");
   }, { once: true });
@@ -430,10 +440,12 @@ function rejectTopCard() {
 // Swipe right - Like
 function likeTopCard() {
   const topCard = deckEl.querySelector(".card:first-child");
-  if (!topCard || profiles.length === 0) return;
+  if (!topCard || profiles.length === 0 || isAnimating) return;
 
-  // Save to history before removing
+  // Save to history and shift state immediately to prevent race conditions
   saveToHistory(profiles[0], "like");
+  profiles.shift();
+  isAnimating = true;
 
   // Remove swiping class to enable transitions
   topCard.classList.remove("swiping");
@@ -445,7 +457,8 @@ function likeTopCard() {
   
   topCard.addEventListener("transitionend", () => {
     topCard.remove();
-    profiles.shift();
+    isAnimating = false;
+    attachDoubleTapListeners(); // Reattach listeners to new top card
     console.log("Card liked!");
     showToast("It's a Like! 💚");
   }, { once: true });
@@ -454,10 +467,12 @@ function likeTopCard() {
 // Swipe up - Super Like
 function superLikeTopCard() {
   const topCard = deckEl.querySelector(".card:first-child");
-  if (!topCard || profiles.length === 0) return;
+  if (!topCard || profiles.length === 0 || isAnimating) return;
 
-  // Save to history before removing
+  // Save to history and shift state immediately to prevent race conditions
   saveToHistory(profiles[0], "superlike");
+  profiles.shift();
+  isAnimating = true;
 
   // Remove swiping class to enable transitions
   topCard.classList.remove("swiping");
@@ -469,7 +484,8 @@ function superLikeTopCard() {
   
   topCard.addEventListener("transitionend", () => {
     topCard.remove();
-    profiles.shift();
+    isAnimating = false;
+    attachDoubleTapListeners(); // Reattach listeners to new top card
     console.log("Card super liked!");
     showToast("SUPER LIKE! ⭐");
   }, { once: true });
@@ -481,9 +497,12 @@ let startY = 0;
 let currentX = 0;
 let currentY = 0;
 let isDragging = false;
+let hasMoved = false; // Track if actual drag movement occurred
+let isAnimating = false; // Block actions while swipe animation is running
 const SWIPE_THRESHOLD = 50;
 const SWIPE_UP_THRESHOLD = 80; // Higher threshold for vertical swipes
 const DRAG_MULTIPLIER = 1.5;
+const MOVE_THRESHOLD = 5; // Minimum movement to count as a drag
 
 function getTopCard() {
   return deckEl.querySelector(".card:first-child");
@@ -491,11 +510,15 @@ function getTopCard() {
 
 function handleDragStart(e) {
   const topCard = getTopCard();
-  if (!topCard) return;
+  if (!topCard || isAnimating) return;
   
   isDragging = true;
+  hasMoved = false;
   startX = e.type === "touchstart" ? e.touches[0].clientX : e.clientX;
   startY = e.type === "touchstart" ? e.touches[0].clientY : e.clientY;
+  // Initialize current coordinates to start position
+  currentX = startX;
+  currentY = startY;
   topCard.classList.add("swiping");
 }
 
@@ -510,6 +533,11 @@ function handleDragMove(e) {
   
   const deltaX = (currentX - startX) * DRAG_MULTIPLIER;
   const deltaY = (currentY - startY) * DRAG_MULTIPLIER;
+  
+  // Mark as moved only if movement exceeds threshold
+  if (!hasMoved && (Math.abs(currentX - startX) > MOVE_THRESHOLD || Math.abs(currentY - startY) > MOVE_THRESHOLD)) {
+    hasMoved = true;
+  }
   const rotation = deltaX * 0.1;
   
   // Determine primary direction based on which axis has more movement
@@ -536,21 +564,28 @@ function handleDragEnd() {
   const deltaX = (currentX - startX) * DRAG_MULTIPLIER;
   const deltaY = (currentY - startY) * DRAG_MULTIPLIER;
   
-  // Determine primary swipe direction
-  const absX = Math.abs(deltaX);
-  const absY = Math.abs(deltaY);
-  
-  if (absY > absX && deltaY < -SWIPE_UP_THRESHOLD) {
-    // Swipe up - super like
-    superLikeTopCard();
-  } else if (deltaX < -SWIPE_THRESHOLD) {
-    // Swipe left - reject/nope
-    rejectTopCard();
-  } else if (deltaX > SWIPE_THRESHOLD) {
-    // Swipe right - like
-    likeTopCard();
+  // Only process as swipe if actual movement occurred
+  if (hasMoved) {
+    // Determine primary swipe direction
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
+    
+    if (absY > absX && deltaY < -SWIPE_UP_THRESHOLD) {
+      // Swipe up - super like
+      superLikeTopCard();
+    } else if (deltaX < -SWIPE_THRESHOLD) {
+      // Swipe left - reject/nope
+      rejectTopCard();
+    } else if (deltaX > SWIPE_THRESHOLD) {
+      // Swipe right - like
+      likeTopCard();
+    } else {
+      // Reset card position (swipe not decisive enough)
+      topCard.classList.remove("swiping");
+      topCard.style.transform = "";
+    }
   } else {
-    // Reset card position (swipe not decisive enough)
+    // No movement - just reset the swiping state
     topCard.classList.remove("swiping");
     topCard.style.transform = "";
   }
@@ -559,6 +594,8 @@ function handleDragEnd() {
   startY = 0;
   currentX = 0;
   currentY = 0;
+  // Reset hasMoved after a short delay to allow tap handler to check it
+  setTimeout(() => { hasMoved = false; }, 0);
 }
 
 // Mouse events
